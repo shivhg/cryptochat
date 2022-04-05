@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	chat "github.com/p2p-chat/chat"
 	"github.com/p2p-chat/model"
+	cors "github.com/rs/cors/wrapper/gin"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -50,6 +51,7 @@ func main() {
 	}
 
 	r := gin.Default()
+	r.Use(cors.Default())
 	r.Use(sessions.Sessions("mysession", store))
 
 	r.GET("/logout", logout)
