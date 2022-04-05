@@ -32,7 +32,7 @@ var secret = []byte("secret")
 var addr = flag.String("addr", ":8080", "http service address")
 
 func main() {
-	dsn := "host=localhost port=5432 user=shivakumar dbname=chatp2p sslmode=disable password="
+	dsn := "host=ec2-18-214-134-226.compute-1.amazonaws.com port=5432 user=ywcynxdtjidmeb dbname=dhma7b9b9h0kc password=0b23ba38cf4d940516888b95eb44929a0795120c46b0c2604aaaa7924971e7a1"
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Info)})
 	if err != nil {
 		log.Fatal(err)
