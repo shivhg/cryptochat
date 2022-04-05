@@ -1,5 +1,6 @@
 module github.com/p2p-chat
 
+// +heroku goVersion go1.15
 go 1.15
 
 require (
