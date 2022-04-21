@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -15,7 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	chat "github.com/p2p-chat/chat"
 	"github.com/p2p-chat/model"
-	cors "github.com/rs/cors/wrapper/gin"
+	"github.com/p2p-chat/service"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -38,11 +39,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = db.AutoMigrate(&model.Message{})
-	err = db.AutoMigrate(&model.User{})
+	//err = db.AutoMigrate(&model.Message{})
+	//err = db.AutoMigrate(&model.User{})
 	if err != nil {
 		panic(err)
 	}
+	var jwtService = service.JWTAuthService()
+	var blockChainAuthenticator = service.BlockChainAuthenticator{Db: db}
 
 	database, _ := db.DB()
 	store, err := sessionpostgres.NewStore(database, []byte("secret"))
@@ -51,24 +54,44 @@ func main() {
 	}
 
 	r := gin.Default()
-	r.Use(cors.Default())
+	r.Use(CORSMiddleware())
 	r.Use(sessions.Sessions("mysession", store))
 
 	r.GET("/logout", logout)
+
+	r.POST("/auth-jwt", func(c *gin.Context) {
+		data, err := ioutil.ReadAll(c.Request.Body)
+		if err != nil || len(data) == 0 {
+			c.JSON(http.StatusUnauthorized, "")
+		}
+		var loginRequest LoginRequest
+		json.Unmarshal(data, &loginRequest)
+
+		verified := blockChainAuthenticator.Authenticate(loginRequest.WalletAddress, loginRequest.Signature)
+
+		if verified {
+			token := jwtService.GenerateToken(loginRequest.WalletAddress)
+			c.JSON(http.StatusOK, map[string]string{"token": token})
+			return
+		}
+
+		c.JSON(http.StatusUnauthorized, "")
+	})
+
 	r.POST("/auth", func(c *gin.Context) {
 		data, _ := ioutil.ReadAll(c.Request.Body)
 		var loginRequest LoginRequest
 		json.Unmarshal(data, &loginRequest)
 		var user model.User
-		tx := db.Find(&user, model.User{Address: loginRequest.Account})
+		tx := db.Find(&user, model.User{Address: loginRequest.WalletAddress})
 		if tx.Error != nil {
 			return
 		}
 
-		verified := verifySig(loginRequest.Account, loginRequest.Signature, []byte("I am signing my one-time nonce: "+user.Nonce))
+		verified := verifySig(loginRequest.WalletAddress, loginRequest.Signature, []byte("I am signing my one-time nonce: "+user.Nonce))
 		if verified {
 			session := sessions.Default(c)
-			session.Set(userkey, loginRequest.Account)
+			session.Set(userkey, loginRequest.WalletAddress)
 			session.Save()
 			c.JSON(http.StatusOK, gin.H{"message": "Successfully authenticated user"})
 		}
@@ -96,7 +119,32 @@ func main() {
 	go hub.Run()
 
 	private := r.Group("")
-	private.Use(AuthRequired)
+	private.Use(func(context *gin.Context) {
+		header := context.GetHeader("Authorization")
+		if header == "" {
+			var err bool
+			header, err = context.GetQuery("Authorization")
+
+			if header == "" || !err {
+				context.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+				return
+			}
+		}
+
+		token, err := jwtService.ValidateToken(header)
+		if err != nil {
+			context.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+
+		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+			context.Set("loggedInAddress", claims["name"])
+			context.Next()
+		} else {
+			context.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		}
+	})
+
 	{
 		private.GET("/ws", func(context *gin.Context) {
 			chat.ServeWs(hub, context.Writer, context.Request,
@@ -114,7 +162,7 @@ func main() {
 
 func fetchMessages(db *gorm.DB) func(context *gin.Context) {
 	return func(context *gin.Context) {
-		address := sessions.Default(context).Get("user")
+		address := context.GetString("loggedInAddress")
 		var messages []model.Message
 		var userMessage = make(map[string][]model.Message)
 
@@ -165,6 +213,22 @@ func verifySig(from, sigHex string, msg []byte) bool {
 }
 
 type LoginRequest struct {
-	Account   string `json:"account"`
-	Signature string `json:"signature"`
+	WalletAddress string `json:"account"`
+	Signature     string `json:"signature"`
+}
+
+func CORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
 }
